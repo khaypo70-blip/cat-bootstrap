@@ -5,11 +5,11 @@ on:
     inputs:
       source_repo:
         description: termux-packages repository
-        default: agnostic-apollo/termux-packages
+        default: termux/termux-packages
         required: true
       source_ref:
-        description: branch (recommended by the Termux wiki)
-        default: infra-improvs
+        description: branch, tag or commit
+        default: master
         required: true
 
 permissions:
@@ -44,47 +44,18 @@ jobs:
           echo "Prefix: $prefix"
           test "$prefix" = "/data/data/$APP_PACKAGE/files/usr"
 
-      - name: Verify foot source and fix its checksum
+      - name: Record commit and fix a known bootstrap script bug
         run: |
-          cat > "$RUNNER_TEMP/verify_foot.py" <<'PY'
-          import gzip, hashlib, pathlib, subprocess, sys, urllib.request, zlib
-
-          URL = "https://codeberg.org/dnkl/foot/archive/1.23.1.tar.gz"
-          PINNED = "02072b8f0aaf26907b6b02293c875539ce52fc59079344e7cf811ab03394cfa3"
-          sha = lambda b: hashlib.sha256(b).hexdigest()
-
-          def variants(tar):
-              for level in range(1, 10):
-                  c = zlib.compressobj(level, zlib.DEFLATED, -15, 8)
-                  body = c.compress(tar) + c.flush()
-                  tail = zlib.crc32(tar).to_bytes(4, "little") + (len(tar) & 0xffffffff).to_bytes(4, "little")
-                  for xfl in (0, 2, 4):
-                      for os_byte in (3, 255):
-                          yield f"zlib level {level}", b"\x1f\x8b\x08\x00\0\0\0\0" + bytes([xfl, os_byte]) + body + tail
-                  yield f"gzip -n -{level}", subprocess.run(["gzip", "-cn", f"-{level}"], input=tar, capture_output=True, check=True).stdout
-
-          def check(data, pinned):
-              if sha(data) == pinned:
-                  return "identical file"
-              tar = gzip.decompress(data)
-              return next((name for name, out in variants(tar) if sha(out) == pinned), None)
-
-          if __name__ == "__main__":
-              files = [p for p in pathlib.Path(".").rglob("*.sh") if p.is_file() and PINNED in p.read_text(errors="ignore")]
-              if not files:
-                  sys.exit("Pinned checksum not found anywhere in the repository")
-              data = urllib.request.urlopen(URL, timeout=120).read()
-              how = check(data, PINNED)
-              print("downloaded sha256:", sha(data))
-              print("tar sha256:", sha(gzip.decompress(data)))
-              if how is None:
-                  sys.exit("NOT VERIFIED: could not reproduce the pinned archive. Checksum left unchanged.")
-              print("VERIFIED against pinned checksum:", how)
-              for p in files:
-                  p.write_text(p.read_text().replace(PINNED, sha(data)))
-                  print("updated", p)
-          PY
-          python3 -I "$RUNNER_TEMP/verify_foot.py"
+          git log -1 --format='termux-packages commit: %H %cI'
+          f=scripts/build-bootstraps.sh
+          # In main(), $package_arch is never set; the architecture is in $TERMUX_ARCH.
+          if grep -q 'add_termux_bootstrap_second_stage_files "$package_arch"' "$f"; then
+            sed -i 's/add_termux_bootstrap_second_stage_files "$package_arch"/add_termux_bootstrap_second_stage_files "$TERMUX_ARCH"/' "$f"
+            echo "patched"
+          else
+            echo "pattern not present, nothing changed"
+          fi
+          grep -n 'add_termux_bootstrap_second_stage_files' "$f"
 
       - name: Set up Android SDK and NDK in the builder container
         timeout-minutes: 30
