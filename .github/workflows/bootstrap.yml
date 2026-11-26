@@ -57,6 +57,44 @@ jobs:
           fi
           grep -n 'add_termux_bootstrap_second_stage_files' "$f"
 
+      - name: Resolve subpackage names and check the package list
+        run: |
+          cat > "$RUNNER_TEMP/subpkg.py" <<'PY'
+          import pathlib, re
+          path = pathlib.Path("scripts/build-bootstraps.sh")
+          text = path.read_text()
+          anchor = re.compile(r'^([ \t]*)local package_name="\$2"[ \t]*\n', re.M)
+          if len(anchor.findall(text)) != 1:
+              raise SystemExit("build_package() has changed; not patching")
+          fix = """if ! compgen -G "$TERMUX_SCRIPTDIR/*packages/$package_name/build.sh" >/dev/null; then
+              local sub
+              sub=$(compgen -G "$TERMUX_SCRIPTDIR/*packages/*/$package_name.subpackage.sh" | head -n1 || true)
+              if [ -n "$sub" ]; then
+                  echo "[*] '$package_name' is a subpackage of '$(basename "$(dirname "$sub")")'"
+                  package_name=$(basename "$(dirname "$sub")")
+              fi
+          fi
+          """
+          path.write_text(anchor.sub(lambda m: m.group(0) + fix, text))
+
+          # Check every listed name now, not an hour into the build.
+          missing = []
+          for name in re.findall(r'^[ \t]*PACKAGES\+=\("([a-z0-9][^"$]*)"\)', text, re.M):
+              own = list(pathlib.Path(".").glob(f"*packages/{name}/build.sh"))
+              sub = sorted(pathlib.Path(".").glob(f"*packages/*/{name}.subpackage.sh"))
+              if own:
+                  print(f"ok       {name}")
+              elif sub:
+                  print(f"ok       {name} (from {sub[0].parent.name})")
+              else:
+                  print(f"MISSING  {name}")
+                  missing.append(name)
+          if missing:
+              raise SystemExit("No recipe for: " + ", ".join(missing))
+          PY
+          python3 -I "$RUNNER_TEMP/subpkg.py"
+          bash -n scripts/build-bootstraps.sh
+
       - name: Build aarch64 bootstrap
         timeout-minutes: 320
         shell: bash
