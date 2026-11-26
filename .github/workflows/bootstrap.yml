@@ -96,27 +96,57 @@ jobs:
           bash -n scripts/build-bootstraps.sh
 
       - name: Build aarch64 bootstrap
-        timeout-minutes: 320
+        timeout-minutes: 240
         shell: bash
         run: |
           set -o pipefail
+          # The container's build user must be able to write the zip into the checkout.
+          chmod a+rwx .
           ./scripts/run-docker.sh ./scripts/build-bootstraps.sh --architectures aarch64 2>&1 | tee build.log
 
+      - name: Check that the bootstrap zip exists
+        run: |
+          if [ ! -f bootstrap-aarch64.zip ]; then
+            echo "::error::build script finished but bootstrap-aarch64.zip was not created"
+            find . -name 'bootstrap-*.zip'
+            docker exec termux-package-builder find /home/builder /tmp -name 'bootstrap-*.zip' || true
+            tail -n 60 build.log
+            exit 1
+          fi
+          ls -l bootstrap-aarch64.zip
+
       - name: Upload bootstrap
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: bootstrap-aarch64
           path: bootstrap-aarch64.zip
           if-no-files-found: error
 
+      - name: Build git and openssh
+        timeout-minutes: 90
+        shell: bash
+        run: |
+          set -o pipefail
+          ./scripts/run-docker.sh ./build-package.sh -a aarch64 git openssh 2>&1 | tee -a build.log
+
+      - name: Pack deb packages
+        if: always()
+        run: |
+          if compgen -G "output/*.deb" >/dev/null; then
+            tar -cf debs-aarch64.tar -C output .
+            echo "deb files: $(ls output/*.deb | wc -l)"
+          else
+            echo "no deb files in output/"
+          fi
+
       - name: Upload deb packages
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: debs-aarch64
-          path: output/*.deb
+          path: debs-aarch64.tar
           if-no-files-found: warn
+          compression-level: 0
 
       - name: Upload build log
         if: always()
