@@ -44,6 +44,10 @@ jobs:
           echo "Prefix: $prefix"
           test "$prefix" = "/data/data/$APP_PACKAGE/files/usr"
 
+      - name: Set up Android SDK and NDK in the builder container
+        timeout-minutes: 30
+        run: ./scripts/run-docker.sh ./scripts/setup-android-sdk.sh
+
       - name: Build aarch64 bootstrap
         timeout-minutes: 320
         shell: bash
@@ -58,6 +62,14 @@ jobs:
           name: bootstrap-aarch64
           path: bootstrap-aarch64.zip
           if-no-files-found: error
+
+      - name: Upload deb packages
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debs-aarch64
+          path: output/*.deb
+          if-no-files-found: warn
 
       - name: Upload build log
         if: always()
