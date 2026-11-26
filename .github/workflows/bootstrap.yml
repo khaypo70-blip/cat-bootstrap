@@ -70,7 +70,7 @@ jobs:
               return next((name for name, out in variants(tar) if sha(out) == pinned), None)
 
           if __name__ == "__main__":
-              files = [p for p in pathlib.Path("packages").rglob("*.sh") if PINNED in p.read_text()]
+              files = [p for p in pathlib.Path("packages").rglob("*.sh") if p.is_file() and PINNED in p.read_text(errors="ignore")]
               if not files:
                   sys.exit("Pinned checksum not found under packages/")
               data = urllib.request.urlopen(URL, timeout=120).read()
