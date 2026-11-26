@@ -57,10 +57,6 @@ jobs:
           fi
           grep -n 'add_termux_bootstrap_second_stage_files' "$f"
 
-      - name: Set up Android SDK and NDK in the builder container
-        timeout-minutes: 30
-        run: ./scripts/run-docker.sh ./scripts/setup-android-sdk.sh
-
       - name: Build aarch64 bootstrap
         timeout-minutes: 320
         shell: bash
