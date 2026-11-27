@@ -1,0 +1,95 @@
+name: Build CAT git and openssh
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: termux-packages repository
+        default: termux/termux-packages
+        required: true
+      source_ref:
+        description: branch, tag or commit
+        default: master
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  git-ssh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      APP_PACKAGE: com.tyron.code
+    steps:
+      - name: Check out termux-packages
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source_repo }}
+          ref: ${{ inputs.source_ref }}
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Set app package name
+        run: |
+          sed -i -E "s/^(TERMUX_APP__PACKAGE_NAME|TERMUX_APP_PACKAGE)=\"com\.termux\"/\1=\"$APP_PACKAGE\"/" scripts/properties.sh
+          grep -nE '^(TERMUX_APP__PACKAGE_NAME|TERMUX_APP_PACKAGE)=' scripts/properties.sh
+
+      - name: Verify prefix (stop early if wrong)
+        run: |
+          prefix=$(bash -c 'export TERMUX_SCRIPTDIR="$PWD"; . scripts/properties.sh >/dev/null; echo "${TERMUX__PREFIX:-$TERMUX_PREFIX}"')
+          echo "Prefix: $prefix"
+          test "$prefix" = "/data/data/$APP_PACKAGE/files/usr"
+          git log -1 --format='termux-packages commit: %H %cI'
+
+      - name: Build git and openssh
+        timeout-minutes: 300
+        shell: bash
+        run: |
+          set -o pipefail
+          ./scripts/run-docker.sh ./build-package.sh -a aarch64 git openssh 2>&1 | tee build.log
+
+      - name: Check that both packages were built
+        run: |
+          for name in git openssh; do
+            if ! compgen -G "output/${name}_*.deb" >/dev/null; then
+              echo "::error::no .deb for $name"
+              exit 1
+            fi
+          done
+          ls -l output
+
+      # Runs after a failure too, so packages that did get built are not lost.
+      # They go in a tar because artifact file names cannot contain ':'.
+      - name: Pack deb packages
+        if: always()
+        run: |
+          if compgen -G "output/*.deb" >/dev/null; then
+            (cd output && sha256sum -- *.deb) > SHA256SUMS
+            tar -cf git-ssh-debs-aarch64.tar -C output . -C .. SHA256SUMS
+            echo "deb files: $(wc -l < SHA256SUMS)"
+            ls -lh git-ssh-debs-aarch64.tar
+            sha256sum git-ssh-debs-aarch64.tar
+          else
+            echo "no deb files in output/"
+          fi
+
+      - name: Upload deb packages
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-ssh-debs-aarch64
+          path: git-ssh-debs-aarch64.tar
+          if-no-files-found: warn
+          compression-level: 0
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: warn
