@@ -1,0 +1,93 @@
+name: Assemble CAT bootstrap from debs
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: ID of the earlier run that has the debs-aarch64 artifact
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_PACKAGE: com.tyron.code
+    steps:
+      - name: Check out termux-packages
+        uses: actions/checkout@v4
+        with:
+          repository: termux/termux-packages
+          ref: master
+
+      - name: Download debs from the earlier run
+        uses: actions/download-artifact@v4
+        with:
+          name: debs-aarch64
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Unpack debs
+        run: |
+          mkdir -p output
+          tar -xf debs-aarch64.tar -C output
+          rm debs-aarch64.tar
+          echo "deb files: $(ls output/*.deb | wc -l)"
+
+      - name: Set app package name
+        run: |
+          sed -i -E "s/^TERMUX_APP__PACKAGE_NAME=\"com\.termux\"/TERMUX_APP__PACKAGE_NAME=\"$APP_PACKAGE\"/" scripts/properties.sh
+          prefix=$(bash -c 'export TERMUX_SCRIPTDIR="$PWD"; . scripts/properties.sh >/dev/null; echo "$TERMUX_PREFIX"')
+          echo "Prefix: $prefix"
+          test "$prefix" = "/data/data/$APP_PACKAGE/files/usr"
+
+      - name: Assemble bootstrap zip (no compiling)
+        run: |
+          cat > "$RUNNER_TEMP/prepare.py" <<'PY'
+          import pathlib
+          src = pathlib.Path("scripts/build-bootstraps.sh").read_text()
+
+          def replace(old, new):
+              global src
+              if src.count(old) != 1:
+                  raise SystemExit("build-bootstraps.sh has changed, expected once: " + old)
+              src = src.replace(old, new)
+
+          replace('TERMUX_PACKAGES_DIRECTORY="/home/builder/termux-packages"',
+                  'TERMUX_PACKAGES_DIRECTORY="$TERMUX_SCRIPTDIR"')
+          # The debs already exist, so skip compiling and the container-only arch bookkeeping.
+          replace('\nmain "$@"', '\nbuild_package() { :; }\ntermux_step_handle_buildarch() { :; }\n\nmain "$@"')
+          src = src.replace('add_termux_bootstrap_second_stage_files "$package_arch"',
+                            'add_termux_bootstrap_second_stage_files "$TERMUX_ARCH"')
+          pathlib.Path("scripts/assemble-bootstrap.sh").write_text(src)
+          PY
+          python3 -I "$RUNNER_TEMP/prepare.py"
+          bash scripts/assemble-bootstrap.sh --architectures aarch64 > assemble.log 2>&1 || { tail -n 60 assemble.log; exit 1; }
+          tail -n 3 assemble.log
+          test -s bootstrap-aarch64.zip
+          unzip -tq bootstrap-aarch64.zip
+          for f in bin/bash bin/apt SYMLINKS.txt; do
+            unzip -Z1 bootstrap-aarch64.zip | grep -Fx "$f"
+          done
+          ls -l bootstrap-aarch64.zip
+          sha256sum bootstrap-aarch64.zip
+
+      - name: Upload bootstrap
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-aarch64
+          path: bootstrap-aarch64.zip
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload assemble log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assemble-log
+          path: assemble.log
+          if-no-files-found: warn
